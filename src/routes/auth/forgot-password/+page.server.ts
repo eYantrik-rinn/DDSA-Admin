@@ -1,6 +1,6 @@
 import { fail } from '@sveltejs/kit';
 import { prisma } from '$lib/server/database.js';
-import { generateResetToken } from '$lib/server/auth.js';
+import { generateResetToken, logAuthEvent } from '$lib/server/auth.js';
 import { sendPasswordResetEmail } from '$lib/server/email.js';
 import { forgotPasswordSchema } from '$lib/validation.js';
 import { env } from '$env/dynamic/private';
@@ -49,6 +49,9 @@ export const actions: Actions = {
 
       // Send reset email
       await sendPasswordResetEmail(email, resetToken, env.APP_URL);
+
+      // Log forgot password event
+      await logAuthEvent(user.id, 'forgot_password', { email });
 
       return {
         success: 'If an account with that email exists, we\'ve sent a password reset link.'

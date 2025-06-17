@@ -1,8 +1,9 @@
 import { fail, redirect } from '@sveltejs/kit';
 import { prisma } from '$lib/server/database.js';
-import { hashPassword, createSession } from '$lib/server/auth.js';
+import { hashPassword, createSession, generateEmailVerificationToken, logAuthEvent, isStrongPassword } from '$lib/server/auth.js';
 import { registerSchema } from '$lib/validation.js';
 import { redirectWithToast } from '$lib/toast-utils';
+import { sendEmailVerification } from '$lib/server/email.js';
 import type { Actions } from './$types';
 
 export const actions: Actions = {
@@ -19,6 +20,14 @@ export const actions: Actions = {
     }
 
     const { username, email, password, firstName, lastName } = result.data;
+
+    // Enforce strong password
+    const passwordCheck = isStrongPassword(password);
+    if (!passwordCheck.valid) {
+      return fail(400, {
+        error: passwordCheck.message || 'Password does not meet security requirements',
+      });
+    }
 
     try {
       // Check if email or username already exists
@@ -40,7 +49,7 @@ export const actions: Actions = {
       // Hash the password
       const hashedPassword = await hashPassword(password);
 
-      // Create new user in the database
+      // Create new user in the database with isEmailVerified false
       const user = await prisma.examUser.create({
         data: {
           username,
@@ -48,10 +57,18 @@ export const actions: Actions = {
           password: hashedPassword,
           firstName: firstName ?? null,
           lastName: lastName ?? null,
+          isEmailVerified: false,
         },
       });
 
-      // Create a new session token
+      // Generate email verification token and send email
+      const verificationToken = await generateEmailVerificationToken(user.id);
+      await sendEmailVerification(email, verificationToken);
+
+      // Log registration event
+      await logAuthEvent(user.id, 'register', { email });
+
+      // Create a new session token (optional: could require email verification before login)
       const token = await createSession(user.id);
 
       // Set the session cookie
@@ -64,7 +81,7 @@ export const actions: Actions = {
       });
 
       // Redirect to dashboard with a success message
-      throw redirectWithToast('/dashboard', 'Account created successfully! Welcome to the dashboard', 'success');
+      throw redirectWithToast('/dashboard', 'Account created successfully! Please verify your email.', 'success');
     } catch (error) {
       if (error instanceof Response) throw error;
 

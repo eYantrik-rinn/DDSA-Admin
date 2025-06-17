@@ -4,12 +4,15 @@ import { prisma, safeDbOperation } from './database.js';
 import { env } from '$env/dynamic/private';
 import type { ExamUser } from '@prisma/client';
 import crypto from 'crypto';
+import speakeasy from 'speakeasy'; // For TOTP MFA
 
 export interface TokenPayload {
   userId: string;
   email: string;
   role: string;
   fingerprint?: string; // Browser fingerprint for advanced security
+  // MFA is not in the schema, commenting out
+  // mfaVerified?: boolean; // MFA verification flag
 }
 
 // Constants
@@ -35,6 +38,34 @@ export async function verifyPassword(password: string, hash: string): Promise<bo
     console.error('Error verifying password:', error);
     return false;
   }
+}
+
+// --- Strong Password Validation ---
+export function isStrongPassword(password: string): {valid: boolean; message?: string} {
+  if (!password || password.length < 8) {
+    return { valid: false, message: 'Password must be at least 8 characters long' };
+  }
+  
+  // Check for complexity requirements
+  const hasUpperCase = /[A-Z]/.test(password);
+  const hasLowerCase = /[a-z]/.test(password);
+  const hasNumbers = /\d/.test(password);
+  const hasSpecialChar = /[!@#$%^&*(),.?":{}|<>]/.test(password);
+  
+  if (!hasUpperCase || !hasLowerCase || !hasNumbers || !hasSpecialChar) {
+    return { 
+      valid: false, 
+      message: 'Password must contain uppercase, lowercase, numbers, and special characters' 
+    };
+  }
+  
+  // Check if password is in common password list (simplified example)
+  const commonPasswords = ['password123', 'Password123', 'admin123', '12345678'];
+  if (commonPasswords.includes(password)) {
+    return { valid: false, message: 'This password is too common and easily guessed' };
+  }
+  
+  return { valid: true };
 }
 
 // --- JWT Utilities ---
@@ -117,7 +148,7 @@ export async function recordLoginAttempt(email: string, success: boolean): Promi
 }
 
 // --- Session Management ---
-export async function createSession(userId: string, fingerprint?: string): Promise<string> {
+export async function createSession(userId: string, fingerprint?: string, mfaVerified: boolean = false): Promise<string> {
   return await safeDbOperation(async () => {
     const user = await prisma.examUser.findUnique({ 
       where: { id: userId },
@@ -125,18 +156,21 @@ export async function createSession(userId: string, fingerprint?: string): Promi
         id: true,
         email: true,
         role: true,
-        isActive: true,
+        isActive: true
+        // MFA fields are not in the schema
+        // mfaEnabled: true,
+        // mfaSecret: true
       }
     });
     
     if (!user) throw new Error('User not found');
-    if (!user.isActive) throw new Error('User account is inactive');
-
-    const token = generateToken({
+    if (!user.isActive) throw new Error('User account is inactive');    const token = generateToken({
       userId: user.id,
       email: user.email,
       role: user.role,
       fingerprint
+      // MFA is not in the schema
+      // mfaVerified
     });
 
     await prisma.examSession.create({
@@ -201,43 +235,65 @@ export async function deleteAllUserSessions(userId: string): Promise<boolean> {
   }, false);
 }
 
+// --- MFA (TOTP) Utilities ---
+export function generateMfaSecret(): { ascii: string; base32: string; otpauth_url: string } {
+  const secret = speakeasy.generateSecret({ length: 20, name: 'YourAppName' });
+  return secret;
+}
+
+export function verifyMfaToken(secret: string, token: string): boolean {
+  return speakeasy.totp.verify({
+    secret,
+    encoding: 'base32',
+    token,
+    window: 1
+  });
+}
+
+// --- Email Verification ---
+export async function generateEmailVerificationToken(userId: string): Promise<string> {
+  const token = crypto.randomBytes(32).toString('hex');
+  const expiry = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+
+  await prisma.emailVerification.upsert({
+    where: { userId },
+    update: { token, expiresAt: expiry },
+    create: { userId, token, expiresAt: expiry }
+  });
+
+  return token;
+}
+
+export async function verifyEmailVerificationToken(token: string): Promise<boolean> {
+  const record = await prisma.emailVerification.findUnique({ where: { token } });
+  if (!record) return false;
+  if (record.expiresAt < new Date()) return false;
+
+  await prisma.examUser.update({
+    where: { id: record.userId },
+    data: { isEmailVerified: true }
+  });
+
+  await prisma.emailVerification.delete({ where: { token } });
+
+  return true;
+}
+
+// --- Audit Logging ---
+export async function logAuthEvent(userId: string, event: string, data?: any): Promise<void> {
+  await safeDbOperation(async () => {
+    await prisma.authAuditLog.create({
+      data: {
+        userId,
+        event,
+        data: JSON.stringify(data || {}),
+        timestamp: new Date()
+      }
+    });
+  });
+}
+
+// --- Reset Token Generation ---
 export async function generateResetToken(): Promise<string> {
   return crypto.randomBytes(32).toString('hex');
-}
-
-/**
- * Generate a one-time verification code
- */
-export function generateOTP(): string {
-  return Math.floor(100000 + Math.random() * 900000).toString();
-}
-
-/**
- * Check if a password meets security requirements
- */
-export function isStrongPassword(password: string): {valid: boolean; message?: string} {
-  if (!password || password.length < 8) {
-    return { valid: false, message: 'Password must be at least 8 characters long' };
-  }
-  
-  // Check for complexity requirements
-  const hasUpperCase = /[A-Z]/.test(password);
-  const hasLowerCase = /[a-z]/.test(password);
-  const hasNumbers = /\d/.test(password);
-  const hasSpecialChar = /[!@#$%^&*(),.?":{}|<>]/.test(password);
-  
-  if (!hasUpperCase || !hasLowerCase || !hasNumbers || !hasSpecialChar) {
-    return { 
-      valid: false, 
-      message: 'Password must contain uppercase, lowercase, numbers, and special characters' 
-    };
-  }
-  
-  // Check if password is in common password list (simplified example)
-  const commonPasswords = ['password123', 'Password123', 'admin123', '12345678'];
-  if (commonPasswords.includes(password)) {
-    return { valid: false, message: 'This password is too common and easily guessed' };
-  }
-  
-  return { valid: true };
 }

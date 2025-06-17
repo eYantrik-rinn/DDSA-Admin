@@ -1,6 +1,6 @@
 import { fail, redirect } from '@sveltejs/kit';
 import { prisma } from '$lib/server/database.js';
-import { hashPassword } from '$lib/server/auth.js';
+import { hashPassword, isStrongPassword, logAuthEvent } from '$lib/server/auth.js';
 import { resetPasswordSchema } from '$lib/validation.js';
 import type { Actions, PageServerLoad } from './$types';
 
@@ -48,6 +48,14 @@ export const actions: Actions = {
       });
     }
 
+    // Enforce strong password
+    const passwordCheck = isStrongPassword(result.data.password);
+    if (!passwordCheck.valid) {
+      return fail(400, {
+        error: passwordCheck.message || 'Password does not meet security requirements'
+      });
+    }
+
     try {
       // Find user by token
       const user = await prisma.examUser.findFirst({
@@ -77,6 +85,9 @@ export const actions: Actions = {
           resetTokenExpiry: null
         }
       });
+
+      // Log password reset event
+      await logAuthEvent(user.id, 'reset_password');
 
       return {
         success: 'Password reset successful. You can now log in with your new password.'
