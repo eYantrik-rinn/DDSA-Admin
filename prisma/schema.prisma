@@ -1,0 +1,90 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native"]
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+model ExamUser {
+  id               String    @id @default(auto()) @map("_id") @db.ObjectId
+  email            String    @unique
+  username         String    @unique
+  password         String
+  firstName        String?
+  lastName         String?
+  avatar           String?
+  role             Role      @default(USER)
+  isActive         Boolean   @default(true)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  resetToken       String?
+  resetTokenExpiry DateTime?
+
+  @@map("exam_users")
+}
+
+model ExamSession {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId    String   @db.ObjectId
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@map("exam_sessions")
+}
+
+model BankEligibility {
+  id                String   @id @default(auto()) @map("_id") @db.ObjectId
+  bankName          String
+  classification    String
+  logoUrl           String?
+  eligibilityData   Json
+  maximumPlAmount   Float?
+  maximumBlAmount   Float?
+  processingFees    Json?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  isDeleted         Boolean  @default(false)
+  deletedAt         DateTime?
+  createdBy         String?  @db.ObjectId
+  updatedBy         String?  @db.ObjectId
+  deletedBy         String?  @db.ObjectId
+  
+  history           BankEligibilityHistory[]
+
+  @@map("bank_eligibility")
+}
+
+model BankEligibilityHistory {
+  id                 String   @id @default(auto()) @map("_id") @db.ObjectId
+  bankEligibilityId  String   @db.ObjectId
+  bankName           String
+  eligibilityData    Json
+  maximumPlAmount    Float?
+  maximumBlAmount    Float?
+  processingFees     Json?
+  changedFields      String[]
+  changeType         ChangeType
+  createdAt          DateTime @default(now())
+  createdBy          String?  @db.ObjectId
+  
+  bankEligibility    BankEligibility @relation(fields: [bankEligibilityId], references: [id])
+
+  @@map("bank_eligibility_history")
+}
+
+enum Role {
+  ADMIN
+  USER
+  MODERATOR
+}
+
+enum ChangeType {
+  CREATE
+  UPDATE
+  DELETE
+  RESTORE
+}
